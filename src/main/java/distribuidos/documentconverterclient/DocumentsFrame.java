@@ -1,6 +1,8 @@
 package distribuidos.documentconverterclient;
 
+import distribuidos.documentconverter.interfaces.Document;
 import distribuidos.documentconverter.interfaces.IdocumentService;
+import java.awt.Desktop;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -26,11 +28,10 @@ import javax.swing.JOptionPane;
 
 public class DocumentsFrame extends javax.swing.JFrame {
     private IdocumentService service;
-    private Inserts inserts = new Inserts();
-    DBConnection dbConnection = new DBConnection();
-    Connection conn = dbConnection.getConnection();
+    
+   
     private String connecetedIp = "";
-    private ExecutorService executorService = Executors.newFixedThreadPool(4);
+    
     
     
     /**
@@ -42,32 +43,20 @@ public class DocumentsFrame extends javax.swing.JFrame {
         
     }
     
-    private void connectToService() {
-    String[] nodes = { "192.168.1.8", "192.168.1.6", "192.168.1.11", "192.168.1.12" };
-    List<String> availableNodes = new ArrayList<>(List.of(nodes));
+   
 
-    // Comprobar la disponibilidad de nodos y conectarse a uno disponible
-    for (String node : availableNodes) {
+     private void connectToService() {
         try {
-            Registry registry = LocateRegistry.getRegistry(node, 8086);
-            IdocumentService tempService = (IdocumentService) registry.lookup("documentService");
-
-            if (tempService.isNodeAvailable()) {
-                service = tempService;
-                connecetedIp = node;
-                System.out.println("Conectado al servicio RMI en " + node);
-                return;  // Conexión exitosa
-            }
+           
+            Registry registry = LocateRegistry.getRegistry("192.168.1.6", 8086);  // Assuming the main server is running at this IP and port
+            service = (IdocumentService) registry.lookup("documentServer");
+            connecetedIp = "192.168.1.6"; 
+            System.out.println("Conectado al servidor RMI en " + connecetedIp);
         } catch (Exception e) {
-            System.out.println("No se pudo conectar al nodo: " + node);
-            availableNodes.remove(node);  // Si el nodo no está disponible, eliminarlo de la lista
+            System.out.println("No se pudo conectar al servidor.");
+            JOptionPane.showMessageDialog(this, "No se pudo conectar al servidor RMI.", "Error", JOptionPane.ERROR_MESSAGE);
         }
     }
-
-    // Si no se puede conectar a ningún nodo, mostrar mensaje de error
-    JOptionPane.showMessageDialog(this, "No hay nodos disponibles.", "Error", JOptionPane.ERROR_MESSAGE);
-}
-
 
 
     /**
@@ -123,65 +112,70 @@ public class DocumentsFrame extends javax.swing.JFrame {
         }// </editor-fold>//GEN-END:initComponents
 
     private void ChooserButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_ChooserButtonActionPerformed
+                                              
+    jFileChooserDocuments.setMultiSelectionEnabled(true);
+    int returnValue = jFileChooserDocuments.showOpenDialog(null);
 
-         jFileChooserDocuments.setMultiSelectionEnabled(true);
-        int returnValue = jFileChooserDocuments.showOpenDialog(null);
+    if (returnValue == JFileChooser.APPROVE_OPTION) {
+        File[] selectedFiles = jFileChooserDocuments.getSelectedFiles();
 
-        if (returnValue == JFileChooser.APPROVE_OPTION) {
-            File[] selectedFiles = jFileChooserDocuments.getSelectedFiles();
+        if (selectedFiles.length == 0) {
+            JOptionPane.showMessageDialog(this, "No se seleccionó ningún archivo.", "Aviso", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
 
-            if (selectedFiles.length == 0) {
-                JOptionPane.showMessageDialog(this, "No se seleccionó ningún archivo.", "Aviso", JOptionPane.WARNING_MESSAGE);
-                return;
-            }
+        List<Document> documentList = new ArrayList<>();
 
-            int nodeId = 1;
-            long userId = 1;
-
-            try {
-                inserts.insertarNodoSiNoExiste(conn, nodeId, connecetedIp, "trabajando");
-
-                for (File file : selectedFiles) {
-                    if (!file.exists()) {
-                        JOptionPane.showMessageDialog(this, "El archivo no existe: " + file.getAbsolutePath(), "Error", JOptionPane.ERROR_MESSAGE);
-                        continue;
-                    }
-
-                    int documentId = inserts.registrarDocumento(conn, file.getName(), file.getAbsolutePath(), userId);
-                    int conversionId = inserts.registrarLote(conn, nodeId, userId, documentId);
-
-                    // Se envía la tarea de conversión directamente al ExecutorService
-                    executorService.submit(new Runnable() {
-                        @Override
-                        public void run() {
-                            try {
-                                long startTime = System.currentTimeMillis();
-                                
-                                // Leer el archivo como bytes para enviarlo correctamente
-                                byte[] fileBytes = Files.readAllBytes(file.toPath());
-                                List<byte[]> pdfFiles = service.convertToPDF(Collections.singletonList(fileBytes));
-                                
-                                long elapsedTime = System.currentTimeMillis() - startTime;
-                                
-                                // Actualizar la base de datos con el tiempo de conversión
-                                inserts.actualizarLote(conn, conversionId, elapsedTime);
-                                
-                            } catch (RemoteException | SQLException e) {
-                                e.printStackTrace();
-                                JOptionPane.showMessageDialog(DocumentsFrame.this, "Error durante la conversión de archivo: " + file.getName(), "Error", JOptionPane.ERROR_MESSAGE);
-                            } catch (IOException ex) {
-                                Logger.getLogger(DocumentsFrame.class.getName()).log(Level.SEVERE, null, ex);
-                            }
-                        }
-                    });
+        try {
+            for (File file : selectedFiles) {
+                if (!file.exists()) {
+                    JOptionPane.showMessageDialog(this, "El archivo no existe: " + file.getAbsolutePath(), "Error", JOptionPane.ERROR_MESSAGE);
+                    continue;
                 }
 
-                JOptionPane.showMessageDialog(this, "Conversión completada.", "Éxito", JOptionPane.INFORMATION_MESSAGE);
-            } catch (SQLException e) {
-                JOptionPane.showMessageDialog(this, "Error en la conversión: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
-                e.printStackTrace();
+                Document document = new Document(file.getName(), file.getAbsolutePath(), Files.readAllBytes(file.toPath()));
+                documentList.add(document);
+                System.out.println("📤 Preparando para enviar: " + file.getName() + " (" + document.getContent().length + " bytes)");
             }
+
+            // Enviar los documentos al servidor
+            List<byte[]> pdfFiles = new ArrayList<>();
+            try {
+                pdfFiles = service.distributeConversion(documentList); 
+
+                if (!pdfFiles.isEmpty()) {
+                    System.out.println("✅ Conversión recibida, cantidad de PDFs: " + pdfFiles.size());
+                } else {
+                    System.err.println("⚠️ No se recibió ningún archivo convertido.");
+                }
+
+            } catch (RemoteException ex) {
+                Logger.getLogger(DocumentsFrame.class.getName()).log(Level.SEVERE, "Error al enviar documentos", ex);
+            }
+
+            // Guardar los PDFs convertidos en la carpeta de descargas del usuario
+            File outputDir = new File(System.getProperty("user.home") + "/Downloads/converted_pdfs/");
+            if (!outputDir.exists()) {
+                outputDir.mkdirs(); // Crear la carpeta si no existe
+            }
+
+            for (int i = 0; i < pdfFiles.size(); i++) {
+                String outputFileName = "Documento_" + (i + 1) + ".pdf";
+                File outputFile = new File(outputDir, outputFileName);
+                Files.write(outputFile.toPath(), pdfFiles.get(i));
+                System.out.println("📥 Guardado: " + outputFile.getAbsolutePath());
+            }
+
+            JOptionPane.showMessageDialog(DocumentsFrame.this, "Conversión completada. Los archivos PDF han sido guardados en:\n" + outputDir.getAbsolutePath(), "Éxito", JOptionPane.INFORMATION_MESSAGE);
+
+            
+            Desktop.getDesktop().open(outputDir);
+
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(this, "Error en la conversión: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            e.printStackTrace();
         }
+    }
     }//GEN-LAST:event_ChooserButtonActionPerformed
 
     /**

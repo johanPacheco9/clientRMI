@@ -1,7 +1,6 @@
 distribuidos\documentconverterclient\DocumentsFrame$1.class
-distribuidos\documentconverterclient\Inserts.class
+distribuidos\documentconverter\interfaces\Document.class
 distribuidos\documentconverter\interfaces\IdocumentService.class
-distribuidos\documentconverterclient\DBConnection.class
 distribuidos\documentconverterclient\DocumentConverterClient.class
 distribuidos\documentconverterclient\DocumentsFrame$2.class
 distribuidos\documentconverterclient\DocumentsFrame.class
