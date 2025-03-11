@@ -2,6 +2,8 @@ package distribuidos.documentconverterclient;
 
 import distribuidos.documentconverter.interfaces.IdocumentService;
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.rmi.RemoteException;
 import java.rmi.registry.LocateRegistry;
 import java.rmi.registry.Registry;
@@ -10,6 +12,8 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.swing.JFileChooser;
@@ -26,6 +30,7 @@ public class DocumentsFrame extends javax.swing.JFrame {
     DBConnection dbConnection = new DBConnection();
     Connection conn = dbConnection.getConnection();
     private String connecetedIp = "";
+    private ExecutorService executorService = Executors.newFixedThreadPool(4);
     
     
     /**
@@ -38,24 +43,31 @@ public class DocumentsFrame extends javax.swing.JFrame {
     }
     
     private void connectToService() {
-        String[] nodes = { "192.168.1.10", "192.168.1.6", "192.168.1.11", "192.168.1.12" }; 
-        for (String node : nodes) {
-            try {
-                Registry registry = LocateRegistry.getRegistry(node, 8086);
-                IdocumentService tempService = (IdocumentService) registry.lookup("documentService");
+    String[] nodes = { "192.168.1.8", "192.168.1.6", "192.168.1.11", "192.168.1.12" };
+    List<String> availableNodes = new ArrayList<>(List.of(nodes));
 
-                if (tempService.isNodeAvailable()) {
-                    service = tempService;
-                    connecetedIp = node;
-                    System.out.println("Conectado al servicio RMI en " + node);
-                    return;
-                }
-            } catch (Exception e) {
-                System.out.println("No se pudo conectar al nodo: " + node);
+    // Comprobar la disponibilidad de nodos y conectarse a uno disponible
+    for (String node : availableNodes) {
+        try {
+            Registry registry = LocateRegistry.getRegistry(node, 8086);
+            IdocumentService tempService = (IdocumentService) registry.lookup("documentService");
+
+            if (tempService.isNodeAvailable()) {
+                service = tempService;
+                connecetedIp = node;
+                System.out.println("Conectado al servicio RMI en " + node);
+                return;  // Conexión exitosa
             }
+        } catch (Exception e) {
+            System.out.println("No se pudo conectar al nodo: " + node);
+            availableNodes.remove(node);  // Si el nodo no está disponible, eliminarlo de la lista
         }
-        JOptionPane.showMessageDialog(this, "No hay nodos disponibles.", "Error", JOptionPane.ERROR_MESSAGE);
     }
+
+    // Si no se puede conectar a ningún nodo, mostrar mensaje de error
+    JOptionPane.showMessageDialog(this, "No hay nodos disponibles.", "Error", JOptionPane.ERROR_MESSAGE);
+}
+
 
 
     /**
@@ -112,49 +124,64 @@ public class DocumentsFrame extends javax.swing.JFrame {
 
     private void ChooserButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_ChooserButtonActionPerformed
 
-     jFileChooserDocuments.setMultiSelectionEnabled(true);
-    int returnValue = jFileChooserDocuments.showOpenDialog(null);
+         jFileChooserDocuments.setMultiSelectionEnabled(true);
+        int returnValue = jFileChooserDocuments.showOpenDialog(null);
 
-    if (returnValue == JFileChooser.APPROVE_OPTION) {
-        File[] selectedFiles = jFileChooserDocuments.getSelectedFiles();
+        if (returnValue == JFileChooser.APPROVE_OPTION) {
+            File[] selectedFiles = jFileChooserDocuments.getSelectedFiles();
 
-        if (selectedFiles.length == 0) {
-            JOptionPane.showMessageDialog(this, "No se seleccionó ningún archivo.", "Aviso", JOptionPane.WARNING_MESSAGE);
-            return;
-        }
-
-        int nodeId = 1; 
-        long userId = 1; 
-
-        try {
-             inserts.insertarNodoSiNoExiste(conn, nodeId, connecetedIp, "trabajando");
-            for (File file : selectedFiles) {
-               
-                int documentId = inserts.registrarDocumento(conn, file.getName(), file.getAbsolutePath(), userId);
-                
-                
-                
-                int conversionId = inserts.registrarLote(conn, nodeId, userId, documentId);
-                
-                long startTime = System.currentTimeMillis();
-
-                
-                List<byte[]> pdfFiles = service.convertToPDF(Collections.singletonList(file.getAbsolutePath()));
-
-                long elapsedTime = System.currentTimeMillis() - startTime;
-
-                
-                inserts.actualizarLote(conn, conversionId, elapsedTime);
+            if (selectedFiles.length == 0) {
+                JOptionPane.showMessageDialog(this, "No se seleccionó ningún archivo.", "Aviso", JOptionPane.WARNING_MESSAGE);
+                return;
             }
 
-            JOptionPane.showMessageDialog(this, "Conversión completada.", "Éxito", JOptionPane.INFORMATION_MESSAGE);
-        } catch (SQLException e) {
-            JOptionPane.showMessageDialog(this, "Error en la conversión: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
-            e.printStackTrace();
-        } catch (RemoteException ex) {
-             Logger.getLogger(DocumentsFrame.class.getName()).log(Level.SEVERE, null, ex);
-         }
-    }
+            int nodeId = 1;
+            long userId = 1;
+
+            try {
+                inserts.insertarNodoSiNoExiste(conn, nodeId, connecetedIp, "trabajando");
+
+                for (File file : selectedFiles) {
+                    if (!file.exists()) {
+                        JOptionPane.showMessageDialog(this, "El archivo no existe: " + file.getAbsolutePath(), "Error", JOptionPane.ERROR_MESSAGE);
+                        continue;
+                    }
+
+                    int documentId = inserts.registrarDocumento(conn, file.getName(), file.getAbsolutePath(), userId);
+                    int conversionId = inserts.registrarLote(conn, nodeId, userId, documentId);
+
+                    // Se envía la tarea de conversión directamente al ExecutorService
+                    executorService.submit(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                long startTime = System.currentTimeMillis();
+                                
+                                // Leer el archivo como bytes para enviarlo correctamente
+                                byte[] fileBytes = Files.readAllBytes(file.toPath());
+                                List<byte[]> pdfFiles = service.convertToPDF(Collections.singletonList(fileBytes));
+                                
+                                long elapsedTime = System.currentTimeMillis() - startTime;
+                                
+                                // Actualizar la base de datos con el tiempo de conversión
+                                inserts.actualizarLote(conn, conversionId, elapsedTime);
+                                
+                            } catch (RemoteException | SQLException e) {
+                                e.printStackTrace();
+                                JOptionPane.showMessageDialog(DocumentsFrame.this, "Error durante la conversión de archivo: " + file.getName(), "Error", JOptionPane.ERROR_MESSAGE);
+                            } catch (IOException ex) {
+                                Logger.getLogger(DocumentsFrame.class.getName()).log(Level.SEVERE, null, ex);
+                            }
+                        }
+                    });
+                }
+
+                JOptionPane.showMessageDialog(this, "Conversión completada.", "Éxito", JOptionPane.INFORMATION_MESSAGE);
+            } catch (SQLException e) {
+                JOptionPane.showMessageDialog(this, "Error en la conversión: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+                e.printStackTrace();
+            }
+        }
     }//GEN-LAST:event_ChooserButtonActionPerformed
 
     /**
