@@ -160,8 +160,8 @@ public class DocumentsFrame extends javax.swing.JFrame {
             }
 
             for (int i = 0; i < pdfFiles.size(); i++) {
-                String outputFileName = "Documento_" + (i + 1) + ".pdf";
-                File outputFile = new File(outputDir, outputFileName);
+                String originalFileName = selectedFiles[i].getName().replace(".docx", ".pdf");
+                File outputFile = new File(outputDir, originalFileName);
                 Files.write(outputFile.toPath(), pdfFiles.get(i));
                 System.out.println("📥 Guardado: " + outputFile.getAbsolutePath());
             }
